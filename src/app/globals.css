@@ -1,26 +1,95 @@
 @import "tailwindcss";
 
-:root {
-  --background: #ffffff;
-  --foreground: #171717;
-}
-
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
+  
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-technical: var(--technical-text);
+  
+  --color-border: var(--border);
+  
+  --color-status-healthy: var(--status-healthy);
+  --color-status-warning: var(--status-warning);
+  --color-status-attack: var(--status-attack);
+  --color-status-info: var(--status-info);
+  
+  --color-surface-primary: var(--surface-primary);
+  --color-surface-secondary: var(--surface-secondary);
+  --color-surface-elevated: var(--surface-elevated);
+  
+  --font-sans: "Inter", var(--font-geist-sans), ui-sans-serif, system-ui, sans-serif;
+  --font-serif: "Instrument Serif", "Cormorant Garamond", ui-serif, Georgia, serif;
+  --font-mono: "JetBrains Mono", var(--font-geist-mono), ui-monospace, SFMono-Regular, monospace;
 }
 
+:root {
+  /* Editorial Security Observatory (Light/Soft) */
+  --background: #F1EFF3;
+  --surface-primary: #F8F7F9;
+  --surface-secondary: #F1EFF3;
+  --surface-elevated: #FFFFFF;
+  
+  --foreground: #25232A;
+  --muted: #E5E1E8;
+  --muted-foreground: #706B75; 
+  --technical-text: #706B75;
+  
+  --border: #D9D4DD;
+  
+  /* Status Colors */
+  --status-info:    #8B6BB1; /* Muted Lavender (Primary Brand Accent) */
+  --status-data:    #7897AD; /* Dusty Steel Blue (Secondary Data Accent) */
+  --status-healthy: #4F9D91; /* Muted Teal */
+  --status-warning: #C4934A; /* Muted Amber */
+  --status-attack:  #C85C5C; /* Muted Brick Red */
+}
+
+/* Force light mode to prevent OS dark mode conflicts */
 @media (prefers-color-scheme: dark) {
   :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
+    color-scheme: light;
   }
 }
 
 body {
-  background: var(--background);
+  background-color: var(--background);
   color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Typography Helpers */
+.text-technical {
+  font-family: var(--font-mono);
+  font-size: 0.85rem;
+  letter-spacing: -0.02em;
+}
+
+/* Hide scrollbar for cleaner look */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--muted-foreground);
+}
+
+/* Custom Cursor default utility classes */
+@media (pointer: fine) {
+  html, body {
+    cursor: url("data:image/svg+xml,%3Csvg width='18' height='18' viewBox='0 0 18 18' fill='none' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M2 2L7 16L9.5 10.5L15 8L2 2Z' fill='%2325232A' stroke='%23FFFFFF' stroke-width='1.5' stroke-linejoin='round'/%3E%3C/svg%3E") 2 2, auto;
+  }
+  a, button, input, select, [role="button"], .cursor-interactive {
+    cursor: pointer;
+  }
 }

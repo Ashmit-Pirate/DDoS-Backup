@@ -1,36 +1,63 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# SAGE — Security Observatory
 
-## Getting Started
+An ML-based adaptive DDoS protection system frontend, currently running with a sophisticated local simulation engine. 
 
-First, run the development server:
+SAGE visualizes real-time network telemetry, classifies incoming traffic using machine learning inference, and dynamically triggers automated mitigation policies in response to recognized threats.
 
+## Tech Stack
+- **Framework:** Next.js 15.2.0 (App Router)
+- **Library:** React 19.0.0
+- **Language:** TypeScript
+- **Styling:** Tailwind CSS (Custom Design System)
+- **Animation:** GSAP (`@gsap/react`)
+- **Data Visualization:** Recharts
+- **Icons:** Lucide React
+
+## Running Locally
 ```bash
-npm run dev
-# or
-yarn dev
-# or
+pnpm install
 pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+## Routes
+- `/` — Overview (Global Telemetry & Status)
+- `/live-traffic` — Live Traffic Monitor
+- `/detection` — Intelligence & ML Analytics
+- `/mitigation` — Decision Engine & Active Policies
+- `/incidents` — Historical Threat Incidents
+- `/incidents/[id]` — Detailed Incident Analysis
+- `/logs` — System Event Logs
+- `/attack-lab` — Controlled Simulation Environment
+- `/settings` — Configuration & Operations
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## State Architecture (`store.tsx`)
+The application relies on a strictly typed, globally available React Context (`SageContext`). This context acts as the single source of truth for the entire observatory. The pages themselves contain virtually no complex state, and simply render what the `SageContext` provides.
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+## Lifecycle
+The application strictly enforces a finite state machine:
+`NORMAL` → `ATTACK_DETECTED` → `CLASSIFIED` → `MITIGATING` → `RECOVERING` → `RECOVERED`
 
-## Learn More
+## Simulation Architecture
+The Attack Lab (`/attack-lab`) allows operators to test the system by dispatching an intensity signal (`simulateAttack`). The simulation engine (`src/lib/simulation/engine.ts`) hooks into the `SageContext` and generates organic, mathematically-interpolated telemetry and state events over time, causing the entire frontend to automatically react to an unfolding threat lifecycle.
 
-To learn more about Next.js, take a look at the following resources:
+## Data Architecture
+Data is strictly partitioned to enable smooth transition to a real backend API:
+- **Static Configuration:** Found in `src/lib/config.ts`. Stores immutable values such as Model Metadata, training metrics, and feature schemas.
+- **Runtime State:** Stored inside `SageContext`. Governs the current mitigation execution mode, real-time targets, server health, and traffic baselines.
+- **Simulation Data:** The context orchestrates arrays of `TrafficPoint`, `Incident`, `LogEvent`, and `MitigationAction` structs.
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+## Backend Integration Path
+The SAGE UI has been explicitly architected so that integrating a real backend requires **zero UI rewrites**.
+1. The `SageContext` provides a generic `dispatchStateUpdate()` setter.
+2. To connect real data, a developer simply replaces the `useEffect` block inside `store.tsx` (which currently drives the local simulation math) with a standard WebSocket client.
+3. As the WebSocket streams JSON data, map it to the provided types (`PredictionResult`, `TrafficPoint`, `SystemState`) and pass it to `dispatchStateUpdate()`. The UI will flawlessly reflect the incoming real-world state.
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
-
-## Deploy on Vercel
-
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+## Important Files
+- `src/lib/store.tsx` — The core global state context and FSM orchestrator.
+- `src/lib/config.ts` — The static model and system constants.
+- `src/types/sage.ts` — The centralized TypeScript model definitions.
+- `src/components/ui/` — The reusable, abstract layout components (`SectionHeader`, `MetricReadout`, `StatusBadge`, `DataTable`).
+- `src/app/globals.css` — Centralized CSS variables driving the entire Tailwind design system.
+- `src/components/TrafficGraph.tsx` — The primary Recharts telemetry visualizer.
+- `src/components/CustomCursor.tsx` — The hardware-accelerated global cursor Portal.
+- `src/components/NavigationRail.tsx` — The primary sidebar layout.
