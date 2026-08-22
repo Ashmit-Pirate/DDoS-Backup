@@ -1,0 +1,19 @@
+# Python Virtual Environment
+.venv/
+env/
+venv/
+__pycache__/
+*.pyc
+
+# Data folders (CRITICAL to ignore, too large for Git)
+data/
+*.parquet
+*.csv
+
+# Jupyter Checkpoints
+.ipynb_checkpoints/
+
+# Old Models and Notebooks
+test_models/
+notebooks/
+summaries/
