@@ -1,10 +1,11 @@
 "use client";
 
-import React, { createContext, useContext, useState, useEffect, ReactNode } from "react";
+import React, { createContext, useContext, useState, useEffect, ReactNode, useMemo } from "react";
 import { 
   SystemState, TrafficPoint, PredictionResult, MitigationAction, Incident, LogEvent, RuntimeSystemConfig
 } from "@/types/sage";
 import { defaultPrediction, defaultConfig, generateBaseTraffic, createLog } from "./simulation/engine";
+import { useLiveConnection, ConnectionMode } from "./api/wsClient";
 
 interface SageContextType {
   state: SystemState;
@@ -14,10 +15,12 @@ interface SageContextType {
   incidents: Incident[];
   logs: LogEvent[];
   config: RuntimeSystemConfig;
+  connectionMode: ConnectionMode;
+  blockedIps: string[];
   simulateAttack: (intensity: "LOW" | "MEDIUM" | "HIGH") => void;
   resetSimulation: () => void;
   // Expose setters for future backend integration without rewriting pages
-  dispatchStateUpdate: (newState: Partial<Omit<SageContextType, "dispatchStateUpdate" | "simulateAttack" | "resetSimulation">>) => void;
+  dispatchStateUpdate: (newState: any) => void;
 }
 
 const SageContext = createContext<SageContextType | undefined>(undefined);
@@ -35,7 +38,27 @@ export const SageProvider = ({ children }: { children: ReactNode }) => {
   const [simIntensity, setSimIntensity] = useState<"LOW" | "MEDIUM" | "HIGH">("MEDIUM");
 
   // A generalized dispatcher for a future WebSocket adapter to call
-  const dispatchStateUpdate = (newState: Partial<Omit<SageContextType, "dispatchStateUpdate" | "simulateAttack" | "resetSimulation">>) => {
+  const dispatchStateUpdate = (newState: any) => {
+    if (newState.type === 'mitigation') {
+      const mitigation = newState.payload as MitigationAction;
+      setMitigations(prev => {
+        const idx = prev.findIndex(m => m.id === mitigation.id);
+        if (idx >= 0) {
+          const arr = [...prev];
+          arr[idx] = mitigation;
+          return arr;
+        }
+        return [...prev, mitigation];
+      });
+      return;
+    }
+    
+    if (newState.type === 'telemetry') {
+      const point = newState.payload as TrafficPoint;
+      setTrafficData(prev => [...prev.slice(1), point]); // Keep sliding window
+      return;
+    }
+
     if (newState.state !== undefined) setState(newState.state);
     if (newState.trafficData !== undefined) setTrafficData(newState.trafficData);
     if (newState.prediction !== undefined) setPrediction(newState.prediction);
@@ -44,11 +67,20 @@ export const SageProvider = ({ children }: { children: ReactNode }) => {
     if (newState.logs !== undefined) setLogs(newState.logs);
     if (newState.config !== undefined) setConfig(newState.config);
   };
+
+  const connectionMode = useLiveConnection(dispatchStateUpdate);
+
+  const blockedIps = useMemo(() => {
+    return mitigations
+      .filter(m => m.status === 'ACTIVE' && m.sourceIp)
+      .map(m => m.sourceIp as string);
+  }, [mitigations]);
   
   // Initialize baseline data
   useEffect(() => {
+    if (connectionMode === 'live') return;
     setTrafficData(generateBaseTraffic(60, config.baselineRequestRate));
-  }, [config.baselineRequestRate]);
+  }, [config.baselineRequestRate, connectionMode]);
 
   const addLog = (logItem: Omit<LogEvent, "id" | "time">) => {
     setLogs((prev) => [createLog(logItem), ...prev].slice(0, 100)); // keep last 100
@@ -60,6 +92,8 @@ export const SageProvider = ({ children }: { children: ReactNode }) => {
   
   // Traffic Tick
   useEffect(() => {
+    if (connectionMode === 'live') return;
+
     const interval = setInterval(() => {
       setTrafficData((prev) => {
         if (prev.length === 0) return prev;
@@ -107,11 +141,11 @@ export const SageProvider = ({ children }: { children: ReactNode }) => {
     }, config.telemetryRefreshRateMs);
 
     return () => clearInterval(interval);
-  }, [state, simIntensity, config.baselineRequestRate, config.telemetryRefreshRateMs]);
+  }, [state, simIntensity, config.baselineRequestRate, config.telemetryRefreshRateMs, connectionMode]);
 
   // State Machine Orchestrator
   useEffect(() => {
-    if (!isSimulating) return;
+    if (!isSimulating || connectionMode === 'live') return;
 
     let timeoutId: NodeJS.Timeout;
 
@@ -178,9 +212,10 @@ export const SageProvider = ({ children }: { children: ReactNode }) => {
     }
 
     return () => clearTimeout(timeoutId);
-  }, [state, isSimulating, incidents]);
+  }, [state, isSimulating, incidents, connectionMode]);
 
   const simulateAttack = (intensity: "LOW" | "MEDIUM" | "HIGH") => {
+    if (connectionMode === 'live') return;
     if (state !== "NORMAL" && state !== "RECOVERED") return;
     setSimIntensity(intensity);
     setIsSimulating(true);
@@ -191,6 +226,7 @@ export const SageProvider = ({ children }: { children: ReactNode }) => {
   };
 
   const resetSimulation = () => {
+    if (connectionMode === 'live') return;
     setIsSimulating(false);
     setState("NORMAL");
     setPrediction(defaultPrediction);
@@ -211,11 +247,19 @@ export const SageProvider = ({ children }: { children: ReactNode }) => {
         incidents,
         logs,
         config,
+        connectionMode,
+        blockedIps,
         simulateAttack,
         resetSimulation,
         dispatchStateUpdate
       }}
     >
+      {connectionMode === 'simulation' && (
+        <div className="fixed bottom-4 right-4 bg-amber-500/10 border border-amber-500/30 text-amber-500 px-3 py-1.5 rounded-full text-sm font-medium flex items-center gap-2 z-50 backdrop-blur-sm">
+          <span className="w-2 h-2 rounded-full bg-amber-500 animate-pulse"></span>
+          Simulation Mode
+        </div>
+      )}
       {children}
     </SageContext.Provider>
   );

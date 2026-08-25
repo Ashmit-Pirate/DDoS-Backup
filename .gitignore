@@ -67,3 +67,7 @@ yarn-error.log*
 next-env.d.ts
 
 tuning_artifacts/
+node_modules/
+.next/
+files_output.txt
+tree_output.txt

@@ -6,7 +6,7 @@ settings:
 
 importers:
 
-  .:
+  dashboard:
     dependencies:
       '@gsap/react':
         specifier: ^2.1.2

@@ -63,6 +63,7 @@ export interface MitigationAction {
   name: string;
   status: MitigationStatus;
   result: string;
+  sourceIp?: string;
 }
 
 export interface Incident {
