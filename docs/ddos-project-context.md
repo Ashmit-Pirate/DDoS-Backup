@@ -165,7 +165,35 @@ this guarantees feature correctness (real dataset values, zero
 feature-engineering translation risk) while keeping the demo's
 attack-button-to-dashboard-reaction causality real.
 
-## Live demo script (4-5 min, as planned)
+## Demo strategy (SUPERSEDES the demo script below) — added 2026-08-26
+
+**Status: team decision pending.** A PDF was sent to the team with three
+concrete options — check which one was actually chosen before assuming.
+
+DoIT (the team's own Express/MongoDB task-manager app, previously the
+target of a real attack-impact test — see `ddos_impact_report.md`) is
+the confirmed, authorized demo target if a real attack is used.
+
+**Three options:**
+1. **Option 1 — dataset-driven, no target.** BUILT AND VERIFIED,
+   2026-08-26 (`docs/demo_runbook_option1.md`,
+   `docs/demo_preflight_checklist.md`, 4 demo beats). Safe baseline
+   regardless of what else is attempted. Proves detection/decision/
+   mitigation intelligence; doesn't claim to protect a website.
+2. **Option 2 — real attack on DoIT, fake/simulated protection.**
+   AVOID — DoIT would genuinely degrade while the dashboard falsely
+   narrates success. Worse than not attempting a live target if noticed.
+3. **Option 3 — real attack, real detection, real enforcement.** The
+   only option where "we protect a website" is literally true. Needs
+   Session 4 (real traffic capture) + Session 5 (real enforcement) — see
+   `ddos-build-plan.md`'s Session 4/5 section for the technical plan.
+   Real engineering risk if rushed — stretch goal, not a replacement for
+   Option 1.
+
+**Recommendation given to the team**: lock in Option 1, treat Option 3
+as a stretch goal, avoid Option 2 entirely.
+
+## Original pitch-deck demo script (SUPERSEDED, kept for history)
 
 Dashboard under normal traffic (healthy/green) → launch the attack tool
 live from a separate machine → dashboard shows latency spike, detector
@@ -175,21 +203,44 @@ don't claim it live*) → close on a metrics card ("Detected in X sec,
 mitigated in Y sec, near-zero downtime") → end on the architecture
 diagram slide.
 
+**Why superseded**: assumed the deck's pitched architecture (pods
+autoscaling, an always-real live attack target) — the "Demo strategy"
+section above reflects what's actually been built and decided.
+
 ## Pitfalls to watch out for (team-wide, revisit before demo day)
 
+**Real pitfalls discovered during actual build, most load-bearing:**
+- **Demo data optimized to guarantee a confidence score is a credibility
+  risk, not a win** — already caught once (an early attempt walked the
+  trained models' own decision paths; rejected and rebuilt as honest
+  synthetic data instead).
+- **Option 2 is the riskiest combination available** — see "Demo
+  strategy" above.
+- **Commit early** — the repo went uncommitted through three full build
+  sessions before this was caught and fixed.
+- **Windows/OneDrive file-attribute issues can silently break Docker
+  builds** — check for reparse-point/sparse-file attributes before
+  assuming a code problem if `docker compose up --build` can't read
+  `api/` files.
+
+**Original pitch-deck-era pitfalls (partially superseded, kept for reference):**
 - **False positives blocking your own demo** — tune thresholds on your
-  exact test traffic beforehand.
+  exact test traffic beforehand. *(Still relevant — thresholds remain
+  unvalidated placeholders.)*
 - **ML overfitting to the team's own attack tool** — validate on
-  CICDDoS2019, not just the synthetic demo pattern.
+  CICDDoS2019, not just the synthetic demo pattern. *(Partially moot for
+  Option 1 — no real CICDDoS2019 rows were available; still relevant for
+  Option 3.)*
 - **Network/legal safety** — Scapy/hping3 need elevated privileges and
   can trip campus network security; run only inside an isolated Docker
   network, isolated VM, or NAT'd VirtualBox, never against a shared or
-  venue network.
-- **Unconvincing recovery time** — pre-warm pods, use fast-triggering
-  thresholds so recovery is visibly quick.
+  venue network. *(Only relevant if Option 3 is pursued.)*
+- **Unconvincing recovery time** — the real story is the Redis TTL
+  cooldown auto-lifting a mitigation, already verified working — not
+  the deck's pods-autoscaling framing.
 - **"How is this different from Cloudflare/AWS Shield?"** — lead with
-  hybrid detection + auto-recovery *(mind the honeypot/autoscaling gaps
-  above when answering this live)*.
+  the two-stage tuned ML cascade + explicit no-direct-block decision
+  engine, not the deck's honeypot/autoscaling framing.
 - **Hackathon Wi-Fi is unreliable** — run the whole demo locally, never
   dependent on venue internet.
 - **Always keep a recorded backup video** of a successful full run.
@@ -200,4 +251,6 @@ All attack simulation stays limited to infrastructure the team owns or is
 explicitly authorized to test. The Docker/Kubernetes environment is the
 lab boundary — the simulator is never pointed at public websites,
 third-party infrastructure, or any network without explicit
-authorization.
+authorization. DoIT is confirmed authorized (the team's own project).
+
+

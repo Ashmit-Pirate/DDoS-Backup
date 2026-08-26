@@ -95,7 +95,29 @@ backend and watching it flip out of simulation mode live.
   isolation bug was found and fixed suite-wide via conftest.py, not
   patched in one file). Explicit negative test proving no-direct-block
   passes. `POST /api/v1/detect` now returns decision + mitigation info.
-- **Session 3 — not started.** Dashboard API + WS bridge + containerize.
+- **Session 3 — DONE.** Dashboard API + WS bridge + containerize.
+  Telemetry runs on its own background interval, decoupled from
+  `/detect` volume. Benign-flow exclusion extended to `events`/WS, not
+  just `detections`. Dashboard WebSocket connectivity independently
+  verified via a cryptographic handshake proof (random key, recomputed
+  `Sec-WebSocket-Accept`), not just self-reported — see
+  `ddos-architecture.md` for the full verification trail.
+- **Option 1 demo — BUILT, VERIFIED, COMMITTED.**
+  `docs/demo_runbook_option1.md` + `docs/demo_preflight_checklist.md`,
+  4 verified demo beats. Demo payloads are honestly-disclosed synthetic
+  data (no real CICDDoS2019 rows available) — an earlier attempt that
+  walked the trained models' own decision paths to guarantee confidence
+  was explicitly rejected as circular validation and rebuilt. A real bug
+  (`"MONITOR applied (None)"` log message) was found and fixed, verified
+  to survive a full `docker compose down`/`up --build` cycle. Repo
+  committed (`ce01d21`) after removing 22 investigation-phase scratch
+  scripts — push to a remote if not already done.
+- **Session 4/5 (real traffic capture + real network-layer enforcement)
+  — scoped, not started, team decision pending.** New scope beyond this
+  plan, for a possible Option 3 demo (real attack on DoIT, real
+  protection). See `ddos-project-context.md`'s "Demo strategy" for the
+  three-option framework this depends on, and the Session 4/5 detail
+  below for the technical plan if the team chooses to pursue it.
 
 ## Model routing per phase (Antigravity)
 
@@ -246,6 +268,42 @@ event maps these into the human-readable `result` string.
 - If a task seems to require weakening any of the above (e.g. "just
   disable CORS for testing"), flag it and ask rather than doing it
   silently.
+
+## Session 4/5 — new scope for the DoIT demo (added 2026-08-26, not part of the original 6-step plan)
+
+Only pursue if the team has confirmed Option 3 (see
+`ddos-project-context.md`'s "Demo strategy") — Option 1 is the safe,
+already-built fallback regardless. Both sessions deliberately cross into
+feature-extraction/infra territory normally owned by teammates — an
+explicit, acknowledged decision for a solo demo build.
+
+**Session 4 — real traffic capture** (feeds the existing, unmodified
+`/detect` endpoint):
+- Use **NFStream**, not hand-rolled Scapy — CICFlowMeter-compatible
+  feature semantics, matching what the models were actually trained on.
+  A hand-built reimplementation risks silent accuracy drift.
+- Verify NFStream's feature names against `feature_columns.pkl` before
+  wiring anything live.
+- Capture point: shared Docker network (cleaner) or host-mode with
+  `NET_ADMIN`/`NET_RAW` — DoIT and this backend are separate compose
+  stacks, decide deliberately.
+- New small service: NFStream flow output → confirmed nested wire format
+  → POST to the existing `/api/v1/detect`, unmodified.
+
+**Session 5 — real network-layer enforcement**:
+- Three enforcement options considered — **direct `iptables`/`nftables`
+  rules from `mitigation_engine.py` recommended.** Middleware inside
+  DoIT's own backend was rejected (wrong product model, doesn't stop SYN
+  floods). A separate shield/proxy is viable but still HTTP-layer only
+  unless backed by real firewall rules underneath.
+- Requires `NET_ADMIN` capability.
+- **TTL-expiry gap, unsolved**: Redis's `mitigation:{source_ip}` TTL
+  expiry is passive — a real firewall rule doesn't remove itself.
+  Needs a background watcher (polling or Redis keyspace notifications)
+  to remove the matching rule on expiry.
+- Use `mitigation_actions.status = 'ACTIVE'` for real enforcement — this
+  value has existed in the schema since the original design, unused
+  until Session 5 builds real enforcement.
 
 ## Not yet decided (flag rather than invent if it comes up)
 
