@@ -39,9 +39,10 @@ with all three but doesn't own them.
   deck promises a hybrid rule-engine + unsupervised anomaly detector
   (Isolation Forest/LSTM) with Kubernetes autoscaling and honeypot
   rerouting. What's actually built is a two-stage **supervised** ML
-  cascade (LightGBM gatekeeper → Random Forest classifier) with
-  rate-limiting/filtering mitigation only — no autoscaling, no honeypot,
-  no unsupervised anomaly detector. See `ddos-project-context.md` for the
+  cascade (LightGBM gatekeeper → tuned XGBoost classifier, updated
+  2026-08-25, replaced an earlier Random Forest) with rate-limiting/
+  filtering mitigation only — no autoscaling, no honeypot, no
+  unsupervised anomaly detector. See `ddos-project-context.md` for the
   full gap list — don't imply the deck's promises are already built.
 
 ## Finalized tech stack for backend
@@ -50,15 +51,11 @@ with all three but doesn't own them.
   scikit-learn/LightGBM — an in-process call avoids a cross-language RPC
   hop — and FastAPI gives native async, a built-in WebSocket endpoint,
   and auto-generated OpenAPI docs the frontend can build against.
-- **ML runtime**: `lightgbm` (binary gatekeeper) + `scikit-learn`
-  (multiclass Random Forest), pin **`scikit-learn==1.3.2`** specifically
-  — the models were trained on that version and unpickling on a newer one
-  (tested: 1.8.0) throws `InconsistentVersionWarning`; don't assume a
-  newer version reproduces identical tree behavior. **`imbalanced-learn`
-  is confirmed NOT required** — despite the "Balanced Random Forest"
-  name, direct `.pkl` inspection confirmed it's a plain
-  `sklearn.ensemble.RandomForestClassifier` with `class_weight='balanced'`,
-  not `imblearn`'s specialized ensemble class.
+- **ML runtime**: `xgboost==2.1.4`, `lightgbm==4.6.0`, `scikit-learn==1.3.2`
+  (updated 2026-08-25 after hyperparameter tuning — see ML model
+  architecture below). scikit-learn remains required even though neither
+  model is an `sklearn.ensemble` class — both use sklearn-API wrapper
+  classes internally. `imbalanced-learn` is confirmed NOT required.
 - **Database**: PostgreSQL — durable event log, mitigation history,
   dashboard queries, tunable config.
 - **Cache/state**: Redis — hot-path state (rate counters,
@@ -96,13 +93,14 @@ DDoS-Mitigator/
 │   ├── redis_client.py
 │   └── migrations/
 ├── detection/                  # SPLIT ownership — see note below
-│   ├── models/                  # the .pkl artifacts: binary_lightgbm.pkl,
-│   │                            #   binary_feature_columns.pkl [77],
-│   │                            #   ddos_multiclass_random_forest.pkl,
-│   │                            #   ddos_feature_columns.pkl [65-subset],
-│   │                            #   label_mapping.pkl [invert at load]
+│   ├── models/                  # tuned_models/lightgbm_binary_tuned.pkl,
+│   │                            #   tuned_models/xgboost_multiclass_tuned.pkl,
+│   │                            #   tuned_models/feature_columns.pkl [single 77-list, shared],
+│   │                            #   tuned_models/class_mapping.pkl [invert at load]
 │   ├── model_loader.py          # THIS USER'S — loads both models once at startup
-│   ├── feature_mapper.py        # THIS USER'S — derives the 65-vector from the 77-vector
+│   ├── feature_mapper.py        # THIS USER'S — reindexes to feature_columns.pkl's 77
+│   │                            #   names for column-order safety (no subset-dropping
+│   │                            #   needed as of the 2026-08-25 model update)
 │   ├── prediction.py            # THIS USER'S — two-stage inference, prediction ONLY,
 │   │                            #   never decides mitigation
 │   └── feature_extractor.py     # ML/feature-extraction teammate's — raw traffic → 77-vector
@@ -137,108 +135,111 @@ Traffic / flow events (from monitor or simulator)
    Dashboard (Next.js, via WS)   Data layer (PostgreSQL + Redis)
 ```
 
-**Flow:** API layer receives the flow's 77-feature vector → derives the
-65-feature subset (see Feature contract) → calls the **binary LightGBM
-gatekeeper** in-process with the 77-vector (every flow, ~0.0026 ms) → if
-Benign, allow and stop (see Benign-flow logging below); if Attack,
-escalate to the **multiclass Random Forest** with the 65-vector
-(~0.0140 ms) + inverted `label_mapping.pkl` for the attack-type string
-and confidence → hands it to the **decision engine**, which pulls recent
-state from Redis (rate, repeated-detection count) to compute a risk
-score/severity — **the binary gatekeeper's `1` output is a trigger to
-escalate and log, never a trigger to block**; blocking is decided solely
-by the decision engine (see `ddos-build-plan.md`) → if risk warrants it,
-the mitigation engine selects an attack-specific action (**simulation
-mode first**) → the event is persisted to Postgres and published to a
-Redis pub/sub channel → the WebSocket bridge forwards it to every
-connected dashboard client.
+**Flow:** API layer receives the flow's 77-feature vector (single vector,
+shared by both stages as of 2026-08-25) → calls the **binary LightGBM
+gatekeeper** in-process (every flow, ~0.0022 ms) → if Benign, allow and
+stop (see Benign-flow logging below); if Attack, escalate to the
+**multiclass XGBoost investigator** with the SAME 77-vector (~0.0057 ms)
++ inverted `class_mapping.pkl` for the attack-type string and confidence
+→ hands it to the **decision engine**, which pulls recent state from
+Redis (rate, repeated-detection count) to compute a risk score/severity —
+**the binary gatekeeper's `1` output is a trigger to escalate and log,
+never a trigger to block**; blocking is decided solely by the decision
+engine (see `ddos-build-plan.md`) → if risk warrants it, the mitigation
+engine selects an attack-specific action (**simulation mode first**) →
+the event is persisted to Postgres and published to a Redis pub/sub
+channel → the WebSocket bridge forwards it to every connected dashboard
+client.
 
-## ML model architecture — two-stage cascade
+## ML model architecture — two-stage cascade (tuned, updated 2026-08-25)
 
-Confirmed by **two independent sources**: direct inspection of the actual
-`.pkl` files, and the ML teammate's own description of her pipeline — not
-just one or the other.
+Hyperparameter tuning (`RandomizedSearchCV` + cross-validation across 6
+candidate models) replaced the multiclass investigator and eliminated
+the earlier two-vector feature split.
 
-| Stage | Model | File | Latency/flow | Role |
-|---|---|---|---|---|
-| 1 — Gatekeeper | Binary LightGBM (`lightgbm.sklearn.LGBMClassifier`) | `binary_lightgbm.pkl` | 0.0026 ms | Runs on **every** flow; outputs `0` (Benign) / `1` (Attack); has `predict_proba` |
-| 2 — Investigator | Multiclass Random Forest (`sklearn.ensemble.RandomForestClassifier`, `class_weight='balanced'`) | `ddos_multiclass_random_forest.pkl` | 0.0140 ms | Runs **only** on flows stage 1 flags as Attack; classifies which of 7 attack types; has `predict_proba` |
+| Stage | Model | File | Metric | Latency/flow |
+|---|---|---|---|---:|
+| 1 — Gatekeeper | Binary LightGBM (tuned) | `lightgbm_binary_tuned.pkl` | 99.94% accuracy | 0.0022 ms |
+| 2 — Investigator | Multiclass XGBoost (tuned, replaces Random Forest) | `xgboost_multiclass_tuned.pkl` | 83.49% macro F1 | 0.0057 ms |
 
-Combined worst-case latency for a flagged flow: ~0.0166 ms.
+Combined worst-case latency for a flagged flow: ~0.0079 ms.
 
 **8 classes**: `Benign, LDAP, MSSQL, NetBIOS, Portmap, Syn, UDP, UDPLag`.
 
-**Multiclass model evaluation:**
+**Pre-tuning evaluation (historical, superseded):**
 
-| Metric | Balanced RF (selected) | Normal RF (not used) |
+| Metric | Balanced RF (no longer used) | Normal RF (never used) |
 |---|---:|---:|
 | Accuracy | 98.55% | 98.66% |
 | Macro Precision | 75.14% | 75.50% |
 | Macro Recall | 78.46% | 74.52% |
 | Macro F1 | 76.59% | 74.95% |
 
-Balanced RF was chosen over the marginally-more-accurate normal RF
-because its macro recall/F1 are higher — more meaningful for this
-imbalanced dataset (SYN/Benign/UDP/MSSQL well-represented;
-NetBIOS/Portmap/UDPLag scarce). **98.55% accuracy is not the whole
-story** — report macro F1 and per-class recall honestly. This ~75% macro
-precision is also *why* the gatekeeper's `1` output must never be an
-automatic block (see decision engine logic in `ddos-build-plan.md`).
+The tuned XGBoost's 83.49% macro F1 is a real improvement over the old
+76.59% — macro F1/per-class recall (not raw accuracy) is what matters for
+this imbalanced dataset (SYN/Benign/UDP/MSSQL well-represented;
+NetBIOS/Portmap/UDPLag scarce). This ~83% precision picture is also *why*
+the gatekeeper's `1` output must never be an automatic block.
 
-**Two benchmarked, rejected alternatives — know they exist, don't build
-against them:**
+**Two benchmarked, rejected alternatives from the pre-tuning round:**
 
 | Model | Latency/flow | Why rejected |
 |---|---:|---|
 | Binary Balanced Random Forest | 0.0094 ms | ~4x slower than Binary LightGBM for no accuracy gain |
-| Multiclass LightGBM | 0.0513 ms | Highest raw accuracy of the four, but slowest at 8-class inference |
+| Multiclass LightGBM | 0.0513 ms | Highest raw accuracy of the four at the time, but slowest |
 
-No XGBoost model is integrated (a teammate may build one separately for
-comparison — not part of the current system).
+## Feature contract — ONE shared 77-feature vector (updated 2026-08-25)
 
-## Feature contract — two vectors, not one (CONFIRMED)
+**History:** from 2026-08-22 to 2026-08-25, the two ML stages needed
+different feature vectors (77 for the gatekeeper, a 65-name subset for
+the pre-tuning Random Forest). **This is no longer true.** XGBoost
+handles the previously-dropped zero-variance columns directly, so both
+tuned models were trained on the identical 77-feature array — confirmed
+via re-verification (`n_features_in_ == 77` checked for both, not
+assumed).
 
-Confirmed by both direct `.pkl` inspection **and** the ML teammate
-independently — not a working assumption.
+- **Both models** expect the same **77 features**, exact names/order in
+  `feature_columns.pkl` — confirmed byte-for-byte identical to the prior
+  `binary_feature_columns.pkl`. The wire-format contract with the
+  feature-extraction teammate is completely unchanged.
+- **Wire format** (unchanged): a named JSON object, one 77-key payload
+  per flow.
+- **Divide-by-zero handling** (unchanged): ratio-style features arrive
+  already as `0` when the denominator is zero.
+- **`class_mapping.pkl`** (renamed from `label_mapping.pkl`, same
+  convention): name→index — must be inverted at load time. A first draft
+  of the update assumed the opposite direction (would have caused a
+  production `KeyError`); self-caught and fixed on re-verification.
+- **Model output shape**: `.predict()` may return a bare scalar or
+  1-element array — handle both defensively.
+- **`predict_proba` confirmed available on both** tuned models.
 
-- **Gatekeeper vector**: 77 features, exact names/order in
-  `binary_feature_columns.pkl`.
-- **Multiclass vector**: 65 features, exact names/order in
-  `ddos_feature_columns.pkl` — a strict subset of the 77, same relative
-  order, with these 12 dropped (constant/all-zero in training data, per
-  the ML teammate): `Bwd PSH Flags, Bwd URG Flags, Fwd URG Flags,
-  FIN Flag Count, ECE Flag Count, PSH Flag Count, Fwd Avg Bytes/Bulk,
-  Fwd Avg Packets/Bulk, Fwd Avg Bulk Rate, Bwd Avg Bytes/Bulk,
-  Bwd Avg Packets/Bulk, Bwd Avg Bulk Rate`.
+**Practical implication**: `feature_mapper.py`'s subset-dropping logic is
+now dead code — reduced to a single `reindex(columns=feature_columns)`
+call kept for column-order safety only. `prediction.py`'s stage 2 call
+now passes the exact same 77-length array used in stage 1.
 
-**Vector-splitting responsibility (CONFIRMED):** the feature-extraction
-teammate sends **one 77-feature vector per flow**; backend derives the
-65-subset itself in `feature_mapper.py` via
-`reindex(columns=multiclass_feature_columns)`.
+**Verification (UPGRADED 2026-08-25)**: originally confirmed via the ML
+teammate's self-report, then independently re-verified by directly
+loading all four `tuned_models/*.pkl` files — every claim checked out
+exactly (both `n_features_in_ == 77`, exact model classes,
+`feature_columns.pkl` byte-for-byte identical to the old file,
+`class_mapping.pkl` direction, `predict_proba` on both, exact version
+match with zero warnings).
 
-**Wire format (CONFIRMED):** a **named JSON object**, not a bare array —
-e.g. `{"Flow Duration": 1500, "Total Fwd Packets": 3, ...}` for all 77
-keys. Verified byte-for-byte against the real `binary_feature_columns.pkl`
-contents (exact spacing/capitalization match).
+**Known quirk, harmless:** the LightGBM gatekeeper's internal
+`feature_name_` uses underscores (`Flow_Duration`) — auto-sanitized at
+training time — while `feature_columns.pkl` and the XGBoost model both
+use spaces. Tested and confirmed this does not break prediction:
+LightGBM's `predict()` matches by column position, not by name.
 
-**Divide-by-zero handling (CONFIRMED):** for ratio-style features (e.g.
-`Flow Bytes/s`) where the denominator is zero, the extractor sends **0**,
-not `NaN`/`Infinity`/`null`. Backend can trust incoming values are
-already clean — keep a defensive check anyway.
-
-**`label_mapping.pkl` is name→index** (`{'Benign': 0, 'LDAP': 1, ...}`) —
-must be **inverted** at load time to decode model output into a string.
-
-**Model output shape**: `predict()` may return a bare scalar or a
-1-element array depending on library/input shape — handle both, don't
-assume `result[0]` always works.
-
-**Do not copy the ML teammate's illustrative API response** — her example
-walkthrough ends with a simplified `{"status": "blocked", "attack_type":
-"Syn"}`. That's her explaining how the *models* chain together, not a
-backend API spec. The real response must go through the decision engine
-and match the finalized `mitigation` WS event shape (see below) — never
-a bare `"blocked"` string assembled straight from the multiclass output.
+**Do not copy the ML teammate's illustrative API response shape** — her
+example walkthroughs end with a simplified `{"status": "blocked",
+"attack_type": "Syn"}`. That's explaining how the *models* chain
+together, not a backend API spec. The real response must go through the
+decision engine and match the finalized `mitigation` WS event shape (see
+below) — never a bare `"blocked"` string assembled straight from the
+multiclass output.
 
 ## Benign-flow logging — design decision
 

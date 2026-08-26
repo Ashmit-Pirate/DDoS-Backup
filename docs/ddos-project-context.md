@@ -55,14 +55,15 @@ tools, and self-hosted setups lacking auto-recovery.
 1. **Detection method.** Deck's headline claim is hybrid rule-engine +
    unsupervised anomaly detection, explicitly pitched as not needing
    labeled signatures. What's actually built is a **two-stage supervised
-   cascade** — Binary LightGBM gatekeeper → Multiclass Random Forest — the
+   cascade** — Binary LightGBM gatekeeper → tuned Multiclass XGBoost
+   (updated 2026-08-25, replaced an earlier Random Forest) — the
    opposite paradigm. The gatekeeper does give a genuine "fast first
-   line of defense" in practice (0.0026 ms/flow), closer in *spirit* to
-   the deck's framing than a single multiclass model — but it's still a
-   trained ML classifier, not a threshold rule engine, and there's no
-   unsupervised anomaly detector anywhere in the build. Lead with
-   "two-stage ML cascade for speed + accuracy" when this comes up, not
-   the rule-engine/anomaly-detector framing.
+   line of defense" in practice (0.0022 ms/flow, tuned), closer in
+   *spirit* to the deck's framing than a single multiclass model — but
+   it's still a trained ML classifier, not a threshold rule engine, and
+   there's no unsupervised anomaly detector anywhere in the build. Lead
+   with "two-stage tuned ML cascade for speed + accuracy" when this comes
+   up, not the rule-engine/anomaly-detector framing.
 2. **Mitigation scope.** Deck promises Kubernetes autoscaling and
    honeypot rerouting. The actual mitigation policy only covers rate
    limiting, filtering, and exposure restriction — no autoscaling or
@@ -120,13 +121,18 @@ backend's own 6-phase plan in `ddos-build-plan.md` for phases 3-4):
 **ML-side roadmap** (from the technical context doc):
 - ✅ **Completed**: dataset obtained/cleaned, train/test split, binary +
   multiclass experiments, Random Forest, Balanced Random Forest, model
-  evaluation, model saved + reload-validated.
-- **Inference**: `prediction.py`, load both models + feature columns +
-  label mapping, accept the correct feature vector per model, return
-  class + confidence. *(Backend's scope — see `ddos-build-plan.md`.)*
+  evaluation, model saved + reload-validated, and (2026-08-25)
+  hyperparameter tuning via RandomizedSearchCV + cross-validation across
+  6 candidate models — replaced the multiclass investigator with a tuned
+  XGBoost classifier and eliminated the earlier 77-vs-65 feature split.
+- **Inference**: `prediction.py`, load both tuned models + the single
+  shared feature-columns list + class mapping, accept the flow's
+  77-feature vector, return class + confidence. *(Backend's scope — see
+  `ddos-build-plan.md`.)*
 - **Traffic/feature extraction**: controlled traffic input, flow
-  extraction, generate BOTH the 77-feature and 65-feature vectors per
-  flow. *(ML/feature-extraction teammate's scope.)*
+  extraction, generate the 77-feature vector per flow (single vector,
+  shared by both stages as of 2026-08-25). *(ML/feature-extraction
+  teammate's scope.)*
 - **Decision & Mitigation**: backend's scope, see `ddos-build-plan.md`.
 - **Dashboard**: live traffic graph, attack stats, confidence,
   risk/severity, mitigation status, event logs. *(Frontend teammate's —

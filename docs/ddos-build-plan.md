@@ -13,16 +13,18 @@ at the end) — this project has real precedent for "planned" and
    + Redis, `/health` endpoint. Test: all three containers start, health
    check returns 200.
 2. **Detection wrap** — `POST /api/v1/detect` calls the binary LightGBM
-   gatekeeper in-process first, using the 77-feature vector (every
-   request); if Benign, increments `stats:total_count`/`stats:benign_count`
-   and stops (no `detections` row). If Attack, escalates to the
-   multiclass Random Forest using the 65-feature vector (derived from the
-   77 in `feature_mapper.py`) + inverted `label_mapping.pkl` for the
-   attack-type string, then writes a `detections` row. Can start before
-   feature extraction is finished using stub vectors of the correct
-   lengths (77 and 65). Test: known benign input → counters increment, no
-   row written; known attack input → correct class + confidence, matches
-   the ML teammate's own evaluation, `detections` row written.
+   gatekeeper (tuned) in-process first, using the 77-feature vector
+   (every request); if Benign, increments
+   `stats:total_count`/`stats:benign_count` and stops (no `detections`
+   row). If Attack, escalates to the multiclass XGBoost investigator
+   (tuned, updated 2026-08-25 — replaced Random Forest) using the SAME
+   77-feature vector (no subset needed as of this update — both models
+   share one vector) + inverted `class_mapping.pkl` for the attack-type
+   string, then writes a `detections` row. Can start before feature
+   extraction is finished using a stub 77-length vector. Test: known
+   benign input → counters increment, no row written; known attack input
+   → correct class + confidence, matches the ML teammate's own
+   evaluation, `detections` row written.
 3. **Decision engine** — risk scoring backed by the Redis counters
    (`rate:{source_ip}`, `detect:{source_ip}:{attack_type}`,
    `mitigation:{source_ip}`), thresholds pulled from `config`. Test:
@@ -41,6 +43,43 @@ at the end) — this project has real precedent for "planned" and
 6. **Containerize** — Dockerfile for the backend service, wired into
    `docker-compose.yml` and the `k8s/` manifests. Test: full stack up via
    `docker-compose up`, end-to-end flow works with no manual steps.
+
+## 3-session practical coding grouping (added 2026-08-25)
+
+The 6 steps above are the architectural reference — sequential,
+test-gated, don't skip prerequisites. For actually coding, they group
+into **3 sessions**, each ending in something independently runnable and
+demoable. Same technical decisions as above, just packaged for real
+sittings. Each session happens to use one consistent model per the
+routing table below.
+
+**Session 1 — Detection is alive** (= steps 1+2, plus CORS)
+Scaffold + detection wrap + `CORSMiddleware` (origins from an env var,
+never wildcard). Demoable via `curl` to `/api/v1/detect` alone — no
+decision engine, mitigation, or dashboard needed yet.
+
+**Session 2 — Decisions are smart** (= steps 3+4)
+Decision engine + mitigation engine (simulation mode). Demoable by
+feeding detections through the pipeline directly and watching Postgres/
+Redis update correctly — no frontend required. Explicit negative test: a
+raw high-confidence prediction alone, with no repeat/rate context, must
+NOT trigger mitigation — this is what actually proves "no direct ML →
+block," not just documents it.
+
+**Session 3 — The system is whole** (= steps 5+6)
+Dashboard API + WebSocket bridge + containerize. Demoable standalone (a
+WS test client) or by pointing the already-built dashboard at this
+backend and watching it flip out of simulation mode live.
+
+**Integration check — after Session 3, verification not a 4th session:**
+1. Set `dashboard/.env.local`: `NEXT_PUBLIC_WS_URL` and
+   `NEXT_PUBLIC_API_BASE_URL` pointing at the running backend.
+2. Run both simultaneously.
+3. Confirm dashboard hydrates via REST on load, "Simulation Mode" badge
+   doesn't stay stuck, and a test `curl` to `/api/v1/detect` produces a
+   live dashboard update within the WS envelope's expected latency.
+4. Badge stuck on simulation? Check CORS origins first, then the WS URL
+   scheme (`ws://` vs `wss://`) — more likely than a backend logic bug.
 
 ## Model routing per phase (Antigravity)
 
@@ -148,8 +187,11 @@ produced a real risk value. Compute prediction → run the decision engine
   explicit override of the ML teammate's own suggested shortcut.
 - **Benign flows aren't persisted to Postgres** — Redis counters feed the
   dashboard's benign% stat instead.
-- **Two different feature vectors** (77 vs. 65) — not one shared vector,
-  confirmed by direct `.pkl` inspection and the ML teammate independently.
+- **One shared feature vector (updated 2026-08-25).** From 2026-08-22 to
+  2026-08-25, the gatekeeper needed 77 features and the multiclass model
+  needed a 65-feature subset. Hyperparameter tuning replaced the
+  investigator with XGBoost, which handles the full 77 directly — both
+  models now share one vector, confirmed via re-verification.
 
 ## Security checklist (hackathon-appropriate, still load-bearing)
 
@@ -167,7 +209,9 @@ produced a real risk value. Compute prediction → run the decision engine
   touches anything resembling multi-user access; ask first.
 - CORS should be locked to the actual dashboard origin for the demo
   environment, not left wildcard, even though this isn't a production
-  deployment.
+  deployment. **Build this in Session 1** (see "3-session practical
+  coding grouping" above) even though it's not load-bearing until Session
+  3 — cheap to add early, easy to forget later if deferred.
 - If a task seems to require weakening any of the above (e.g. "just
   disable CORS for testing"), flag it and ask rather than doing it
   silently.
