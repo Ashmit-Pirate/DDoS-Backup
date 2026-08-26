@@ -81,6 +81,22 @@ backend and watching it flip out of simulation mode live.
 4. Badge stuck on simulation? Check CORS origins first, then the WS URL
    scheme (`ws://` vs `wss://`) — more likely than a backend logic bug.
 
+## Implementation status (as of 2026-08-26)
+
+- **Session 1 — DONE.** Scaffold, detection wrap, CORS. 14 automated
+  tests passing + live Postgres/Redis/uvicorn verification. Note: the
+  request wire format for `/detect` was corrected mid-session — it's
+  nested (`{metadata: {...}, features: {...}}`), not the flat shape
+  originally assumed. See `ddos-architecture.md`'s Feature contract
+  section for the confirmed shape.
+- **Session 2 — DONE.** Decision engine + mitigation engine (simulation
+  mode). 27/27 tests passing, 0 skips, verified reliable under
+  randomized test ordering (a real cross-file Redis-singleton test
+  isolation bug was found and fixed suite-wide via conftest.py, not
+  patched in one file). Explicit negative test proving no-direct-block
+  passes. `POST /api/v1/detect` now returns decision + mitigation info.
+- **Session 3 — not started.** Dashboard API + WS bridge + containerize.
+
 ## Model routing per phase (Antigravity)
 
 | Phase | What it is | Model | Why |
@@ -136,6 +152,17 @@ MEDIUM; below that → LOW/suspicious tier (monitor, don't mitigate yet).
 Exact numbers should ultimately live in the `config` table, not be
 hardcoded.
 
+**`repeat_count` semantics — CONFIRMED, built in Session 2:**
+POST-increment — `repeat_count >= 3` means the 3rd total occurrence
+(including the current detection), not 3 prior + this one as a 4th. A
+first-time detection has `repeat_count == 1` at scoring time, still well
+under the threshold — the no-direct-block invariant holds either way.
+
+**`traffic_rate`/`already_mitigated` are explainability-only for now —
+CONFIRMED:** captured in `factors` for the dashboard panel, but don't
+currently affect severity bucketing (only confidence + repeat_count do).
+Revisit during real threshold tuning.
+
 **Event-publish ordering rule:** the `detection` WS event's `risk` field
 must carry the actual computed severity from the decision engine — never
 publish the `detection` event before the decision engine has run and
@@ -144,17 +171,21 @@ produced a real risk value. Compute prediction → run the decision engine
 
 ## Mitigation policy — attack-specific, staged
 
-| Traffic/attack | Action |
-|---|---|
-| Benign | Allow, no mitigation |
-| SYN | Connection rate limiting |
-| UDP | UDP rate limiting + filtering |
-| MSSQL | Restrict exposure + rate controls |
-| LDAP | LDAP-specific filtering + rate limiting |
-| NetBIOS | Restrict unnecessary NetBIOS traffic |
-| Portmap | Restrict portmapper/RPC exposure |
-| UDPLag | Rate limiting + suspicious-flow filtering |
-| Repeated high-confidence attack | Escalate, temporary source block |
+| Traffic/attack | Action | `action_type` (CONFIRMED, canonical) |
+|---|---|---|
+| Benign | Allow, no mitigation | — |
+| SYN | Connection rate limiting | `RATE_LIMIT` |
+| UDP | UDP rate limiting + filtering | `RATE_LIMIT_AND_FILTER` |
+| MSSQL | Restrict exposure + rate controls | `RESTRICT_EXPOSURE` |
+| LDAP | LDAP-specific filtering + rate limiting | `FILTER_AND_RATE_LIMIT` |
+| NetBIOS | Restrict unnecessary NetBIOS traffic | `RESTRICT_TRAFFIC` |
+| Portmap | Restrict portmapper/RPC exposure | `RESTRICT_EXPOSURE` |
+| UDPLag | Rate limiting + suspicious-flow filtering | `RATE_LIMIT_AND_FILTER` |
+| Repeated high-confidence attack | Escalate, temporary source block | (not yet built) |
+
+Five canonical `action_type` values, no CHECK constraint in the DB but
+treat this table as the fixed vocabulary — Session 3's WS `mitigation`
+event maps these into the human-readable `result` string.
 
 **Staged rollout, not optional:**
 1. **Simulation mode** (default, built first) — decision + mitigation

@@ -202,8 +202,20 @@ assumed).
   `feature_columns.pkl` — confirmed byte-for-byte identical to the prior
   `binary_feature_columns.pkl`. The wire-format contract with the
   feature-extraction teammate is completely unchanged.
-- **Wire format** (unchanged): a named JSON object, one 77-key payload
-  per flow.
+- **Wire format — CORRECTED 2026-08-26**: nested, not a flat 77-key
+  object as earlier assumed. Confirmed directly by the ML/feature-
+  extraction teammate and independently verified against a live
+  Postgres/Redis/uvicorn stack:
+  ```json
+  { "metadata": { "source_ip": "...", "destination_ip": "...",
+                  "source_port": <int>, "destination_port": <int> },
+    "features": { /* all 77 named feature keys */ } }
+  ```
+  Reason given: the model must never see IP/port fields mixed into the
+  feature vector. `destination_ip`/`source_port`/`destination_port` are
+  accepted by the API but not yet persisted anywhere (only `source_ip`
+  is stored, matching the existing `detections` schema). `/detect`
+  rejects any other shape (including the old flat format) with a `422`.
 - **Divide-by-zero handling** (unchanged): ratio-style features arrive
   already as `0` when the denominator is zero.
 - **`class_mapping.pkl`** (renamed from `label_mapping.pkl`, same

@@ -10,6 +10,11 @@ from db.database import engine
 from db.redis_client import ping_redis, close_redis
 from detection.model_loader import load_models, get_model_bundle
 from api.routers.detect import router as detect_router
+from api.routers.ws import router as ws_router
+from api.routers.status import router as status_router
+from api.routers.events import router as events_router
+from api.routers.mitigation import router as mitigation_router
+from api.routers.config import router as config_router
 from api.schemas import HealthResponse
 
 load_dotenv()
@@ -24,6 +29,45 @@ def get_allowed_origins() -> List[str]:
     return filtered_origins if filtered_origins else ["http://localhost:3000"]
 
 
+import asyncio
+from datetime import datetime, timezone
+from db.redis_client import get_traffic_stats
+from db.database import SessionLocal
+from db.models import Config
+from api.events_publisher import publish_event
+
+async def telemetry_loop():
+    while True:
+        refresh_rate_ms = 1000
+        baseline_rate = 1000
+        try:
+            with SessionLocal() as db:
+                rate_rec = db.query(Config).filter(Config.key == "telemetryRefreshRateMs").first()
+                if rate_rec:
+                    refresh_rate_ms = int(rate_rec.value)
+                base_rec = db.query(Config).filter(Config.key == "baselineRequestRate").first()
+                if base_rec:
+                    baseline_rate = int(base_rec.value)
+        except Exception:
+            pass
+            
+        try:
+            stats = await get_traffic_stats()
+            now = datetime.now(timezone.utc)
+            telemetry_data = {
+                "time": now.strftime("%H:%M:%S"),
+                "timestamp": int(now.timestamp() * 1000),
+                "incoming": stats["total_count"],
+                "origin": stats["benign_count"],
+                "baseline": baseline_rate,
+                "event": None
+            }
+            await publish_event("telemetry", telemetry_data, db=None, db_args=None)
+        except Exception as e:
+            print(f"Telemetry loop error: {e}")
+            
+        await asyncio.sleep(refresh_rate_ms / 1000.0)
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """
@@ -33,9 +77,11 @@ async def lifespan(app: FastAPI):
       2. Verifies PostgreSQL database connectivity (SELECT 1).
          (Note: Schema creation is strictly managed by Alembic, not create_all).
       3. Verifies Redis connectivity via ping.
+      4. Starts the background telemetry loop.
     - Shutdown:
-      1. Closes Redis connection pool.
-      2. Disposes database engine pool.
+      1. Cancels the background telemetry loop.
+      2. Closes Redis connection pool.
+      3. Disposes database engine pool.
     """
     # 1. Load ML models once into memory
     try:
@@ -62,9 +108,13 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         print(f"Warning: Redis connectivity check failed: {e}")
 
+    # 4. Start background telemetry loop
+    telemetry_task = asyncio.create_task(telemetry_loop())
+
     yield
 
     # Shutdown
+    telemetry_task.cancel()
     await close_redis()
     engine.dispose()
     print("Application shutdown: database and Redis pools closed.")
@@ -89,7 +139,11 @@ app.add_middleware(
 
 # Mount API Routers
 app.include_router(detect_router)
-
+app.include_router(ws_router)
+app.include_router(status_router)
+app.include_router(events_router)
+app.include_router(mitigation_router)
+app.include_router(config_router)
 
 @app.get(
     "/health",

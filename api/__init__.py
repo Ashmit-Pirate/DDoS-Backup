@@ -1,3 +1,3 @@
-from api.schemas import DetectRequest, DetectResponse, HealthResponse
+from api.schemas import DetectRequest, DetectResponse, DecisionInfo, MitigationInfo, HealthResponse
 
-__all__ = ["DetectRequest", "DetectResponse", "HealthResponse"]
+__all__ = ["DetectRequest", "DetectResponse", "DecisionInfo", "MitigationInfo", "HealthResponse"]

@@ -21,6 +21,7 @@ def test_load_models_success():
 
 
 def test_get_model_bundle_singleton():
+    load_models()
     bundle1 = get_model_bundle()
     bundle2 = get_model_bundle()
     assert bundle1 is bundle2
